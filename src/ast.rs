@@ -10,26 +10,26 @@ use smallvec::{smallvec, SmallVec};
 
 pub(crate) type Span = Range<usize>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct VarDecl<'source> {
     typ: Identifier<'source>,
     ident: Identifier<'source>,
     array_size: Option<SmallVec<[u8; 2]>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct StructMember<'source> {
     decl: VarDecl<'source>,
     condition: Option<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct StructDef<'source> {
     idents: SmallVec<[Identifier<'source>; 3]>,
     members: SmallVec<[StructMember<'source>; 8]>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct AstNode<'source> {
     typ: AstNodeType<'source>,
     span: Span,
@@ -61,10 +61,10 @@ impl<'source> AstNode<'source> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 struct Identifier<'source>(&'source str);
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 enum AstNodeType<'source> {
     VarDecl,
     FuncCall,
@@ -174,9 +174,7 @@ impl<'source> Parser<'source> {
         start != self.position
     }
 
-    fn chomp_multiline_comment(&mut self) {
-
-    }
+    fn chomp_multiline_comment(&mut self) {}
 
     fn chomp_ignored_tokens(&mut self) -> Result<bool, ParserErrorInternal<'source>> {
         let start = self.position;
@@ -184,7 +182,7 @@ impl<'source> Parser<'source> {
         loop {
             self.chomp_whitespace();
 
-            // Peek the next token -- if it's a line comment, read until the end of the line
+            // Peek the next token to see if it's a comment.
             match self.peek() {
                 Ok('/') => {
                     self.next()?;
@@ -193,7 +191,10 @@ impl<'source> Parser<'source> {
                             self.next()?;
 
                             loop {
-                                if matches!(self.next(), Ok('\n') | Err(ParserErrorInternal::UnexpectedEndOfFile)) {
+                                if matches!(
+                                    self.next(),
+                                    Ok('\n') | Err(ParserErrorInternal::UnexpectedEndOfFile)
+                                ) {
                                     // We reached either the end of file or the end
                                     // of this line -- we can stop chomping
                                     break;
@@ -204,8 +205,14 @@ impl<'source> Parser<'source> {
                             self.next()?;
 
                             loop {
-                                if matches!(self.next(), Ok('*') | Err(ParserErrorInternal::UnexpectedEndOfFile)) {
-                                    if matches!(self.next(), Ok('/') | Err(ParserErrorInternal::UnexpectedEndOfFile)) {
+                                if matches!(
+                                    self.next(),
+                                    Ok('*') | Err(ParserErrorInternal::UnexpectedEndOfFile)
+                                ) {
+                                    if matches!(
+                                        self.next(),
+                                        Ok('/') | Err(ParserErrorInternal::UnexpectedEndOfFile)
+                                    ) {
                                         break;
                                     }
                                 }
@@ -247,21 +254,21 @@ impl<'source> Parser<'source> {
     ) -> Result<SmallVec<[StructMember<'source>; 8]>, ParserErrorInternal<'source>> {
         let mut members = SmallVec::new();
         loop {
-            self.chomp_ignored_tokens();
+            self.chomp_ignored_tokens()?;
 
             // Parse the first identifier (type) if it exists
             let next = self.peek()?;
             if next.is_ident_start() {
                 let typ = self.parse_ident()?;
 
-                self.chomp_ignored_tokens();
+                self.chomp_ignored_tokens()?;
 
                 // Parse the second identifier (name) if it exists
                 let next = self.peek()?;
                 if next.is_ident_start() {
                     let name = self.parse_ident()?;
 
-                    self.chomp_ignored_tokens();
+                    self.chomp_ignored_tokens()?;
 
                     members.push(StructMember {
                         decl: VarDecl {
@@ -313,7 +320,7 @@ impl<'source> Parser<'source> {
     ) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
         let start = self.position;
 
-        self.chomp_ignored_tokens();
+        self.chomp_ignored_tokens()?;
 
         // Next token *may* be an identifier
         let ident = if self.peek()?.is_ident_start() {
@@ -383,7 +390,7 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_typedef(&mut self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
-        self.chomp_ignored_tokens();
+        self.chomp_ignored_tokens()?;
 
         let start = self.position;
 
@@ -415,7 +422,7 @@ impl<'source> Parser<'source> {
 
         let s_def = s.as_struct_mut().expect("expected struct");
         loop {
-            self.chomp_ignored_tokens();
+            self.chomp_ignored_tokens()?;
 
             let next = self.peek()?;
             if next.is_ident_start() {
@@ -466,7 +473,7 @@ impl<'source> Parser<'source> {
 
     fn advance_while<F: Fn(&char) -> bool>(&mut self, func: F) -> usize {
         while self.position < self.iter.len() && func(&self.iter[self.position]) {
-                self.position += 1;
+            self.position += 1;
         }
 
         self.position
@@ -493,10 +500,7 @@ mod tests {
         let s = "100";
         let mut parser = Parser::new(s);
 
-        let result = parser.parse_number();
-        assert!(result.is_ok());
-
-        let result = result.unwrap();
+        let result = parser.parse_number().unwrap();
 
         assert!(matches!(result.typ, AstNodeType::DecimalLiteral(100)));
         assert!(result.span == (0..s.len()));
@@ -507,10 +511,7 @@ mod tests {
         let s = "0x100";
         let mut parser = Parser::new(s);
 
-        let result = parser.parse_number();
-        assert!(result.is_ok());
-
-        let result = result.unwrap();
+        let result = parser.parse_number().unwrap();
 
         assert!(matches!(result.typ, AstNodeType::HexLiteral(0x100)));
         assert!(result.span == (0..s.len()));
@@ -521,10 +522,7 @@ mod tests {
         let s = "0xabc3";
         let mut parser = Parser::new(s);
 
-        let result = parser.parse_number();
-        assert!(result.is_ok());
-
-        let result = result.unwrap();
+        let result = parser.parse_number().unwrap();
 
         assert!(matches!(result.typ, AstNodeType::HexLiteral(0xabc3)));
         assert!(result.span == (0..s.len()));
@@ -535,10 +533,7 @@ mod tests {
         let s = "0b101";
         let mut parser = Parser::new(s);
 
-        let result = parser.parse_number();
-        assert!(result.is_ok());
-
-        let result = result.unwrap();
+        let result = parser.parse_number().unwrap();
 
         assert!(matches!(result.typ, AstNodeType::BinaryLiteral(0b101)));
         assert!(result.span == (0..s.len()));
@@ -549,10 +544,7 @@ mod tests {
         let s = "01777";
         let mut parser = Parser::new(s);
 
-        let result = parser.parse_number();
-        assert!(result.is_ok());
-
-        let result = result.unwrap();
+        let result = parser.parse_number().unwrap();
 
         assert!(matches!(result.typ, AstNodeType::OctalLiteral(0o1777)));
         assert!(result.span == (0..s.len()));
@@ -567,21 +559,53 @@ mod tests {
         let mut parser = Parser::new(s);
 
         let result = parser.parse_typedef().unwrap();
+
+        let idents = smallvec![Identifier("Foo")];
+        let members = smallvec![StructMember {
+            decl: VarDecl {
+                typ: Identifier("char"),
+                ident: Identifier("field"),
+                array_size: None,
+            },
+            condition: None
+        }];
+
+        let expected = AstNodeType::StructDef(StructDef { idents, members });
+
+        assert!(result.typ == expected);
+        assert!(result.span == (0..s.len()));
     }
 
     #[test]
     fn parse_basic_struct_def_with_comments() {
         let s = r#"
-        // My comment
-        typedef struct { // comment
-            char field; /* single line multiline comment */
+        // start comment
+        typedef struct {
+            // comment in the middle of the def
+            char /* comment between idents */ field;// and at the end of the decl
             /*
-            multiline comment
+                multiline comment
              */
         } Foo;"#;
 
         let mut parser = Parser::new(s);
 
         let result = parser.parse_typedef().unwrap();
+
+        let idents = smallvec![Identifier("Foo")];
+        let members = smallvec![StructMember {
+            decl: VarDecl {
+                typ: Identifier("char"),
+                ident: Identifier("field"),
+                array_size: None,
+            },
+            condition: None
+        }];
+
+        let expected = AstNodeType::StructDef(StructDef { idents, members });
+
+        assert!(result.typ == expected);
+        assert!(result.span == (s.find("typedef").unwrap()..s.len()));
     }
+
 }
