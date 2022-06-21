@@ -92,14 +92,14 @@ impl CharExt for char {
 
 struct Parser<'source> {
     input: &'source str,
-    iter: Peekable<Chars<'source>>,
+    iter: Vec<char>,
     position: usize,
     line_num: usize,
 }
 
 impl<'source> Parser<'source> {
     pub fn new(input: &'source str) -> Self {
-        let iter = input.chars().peekable();
+        let iter = input.chars().collect();
         Parser {
             input,
             iter,
@@ -174,6 +174,57 @@ impl<'source> Parser<'source> {
         start != self.position
     }
 
+    fn chomp_multiline_comment(&mut self) {
+
+    }
+
+    fn chomp_ignored_tokens(&mut self) -> Result<bool, ParserErrorInternal<'source>> {
+        let start = self.position;
+
+        loop {
+            self.chomp_whitespace();
+
+            // Peek the next token -- if it's a line comment, read until the end of the line
+            match self.peek() {
+                Ok('/') => {
+                    self.next()?;
+                    match self.peek() {
+                        Ok('/') => {
+                            self.next()?;
+
+                            loop {
+                                if matches!(self.next(), Ok('\n') | Err(ParserErrorInternal::UnexpectedEndOfFile)) {
+                                    // We reached either the end of file or the end
+                                    // of this line -- we can stop chomping
+                                    break;
+                                }
+                            }
+                        }
+                        Ok('*') => {
+                            self.next()?;
+
+                            loop {
+                                if matches!(self.next(), Ok('*') | Err(ParserErrorInternal::UnexpectedEndOfFile)) {
+                                    if matches!(self.next(), Ok('/') | Err(ParserErrorInternal::UnexpectedEndOfFile)) {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            // Rewind the last token -- it's not a comment
+                            self.rewind();
+                            break;
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        Ok(start != self.position)
+    }
+
     fn parse_ident(&mut self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
         let start = self.position;
 
@@ -196,21 +247,21 @@ impl<'source> Parser<'source> {
     ) -> Result<SmallVec<[StructMember<'source>; 8]>, ParserErrorInternal<'source>> {
         let mut members = SmallVec::new();
         loop {
-            self.chomp_whitespace();
+            self.chomp_ignored_tokens();
 
             // Parse the first identifier (type) if it exists
             let next = self.peek()?;
             if next.is_ident_start() {
                 let typ = self.parse_ident()?;
 
-                self.chomp_whitespace();
+                self.chomp_ignored_tokens();
 
                 // Parse the second identifier (name) if it exists
                 let next = self.peek()?;
                 if next.is_ident_start() {
                     let name = self.parse_ident()?;
 
-                    self.chomp_whitespace();
+                    self.chomp_ignored_tokens();
 
                     members.push(StructMember {
                         decl: VarDecl {
@@ -262,7 +313,7 @@ impl<'source> Parser<'source> {
     ) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
         let start = self.position;
 
-        self.chomp_whitespace();
+        self.chomp_ignored_tokens();
 
         // Next token *may* be an identifier
         let ident = if self.peek()?.is_ident_start() {
@@ -332,7 +383,7 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_typedef(&mut self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
-        self.chomp_whitespace();
+        self.chomp_ignored_tokens();
 
         let start = self.position;
 
@@ -340,7 +391,7 @@ impl<'source> Parser<'source> {
         let ident = self.parse_ident()?;
 
         // Next token must be whitespace
-        if !self.chomp_whitespace() {
+        if !self.chomp_ignored_tokens()? {
             let next = self.next()?;
 
             return Err(ParserErrorInternal::UnexpectedCharacter(next));
@@ -364,7 +415,7 @@ impl<'source> Parser<'source> {
 
         let s_def = s.as_struct_mut().expect("expected struct");
         loop {
-            self.chomp_whitespace();
+            self.chomp_ignored_tokens();
 
             let next = self.peek()?;
             if next.is_ident_start() {
@@ -403,7 +454,8 @@ impl<'source> Parser<'source> {
     fn next(&mut self) -> Result<char, ParserErrorInternal<'source>> {
         let next = self
             .iter
-            .next()
+            .get(self.position)
+            .cloned()
             .ok_or(ParserErrorInternal::UnexpectedEndOfFile);
         if next.is_ok() {
             self.position += 1;
@@ -413,8 +465,8 @@ impl<'source> Parser<'source> {
     }
 
     fn advance_while<F: Fn(&char) -> bool>(&mut self, func: F) -> usize {
-        while let Some(_) = self.iter.next_if(&func) {
-            self.position += 1;
+        while self.position < self.iter.len() && func(&self.iter[self.position]) {
+                self.position += 1;
         }
 
         self.position
@@ -422,9 +474,13 @@ impl<'source> Parser<'source> {
 
     fn peek(&mut self) -> Result<char, ParserErrorInternal<'source>> {
         self.iter
-            .peek()
+            .get(self.position)
             .cloned()
             .ok_or(ParserErrorInternal::UnexpectedEndOfFile)
+    }
+
+    fn rewind(&mut self) {
+        self.position = self.position.saturating_sub(1)
     }
 }
 
@@ -506,6 +562,22 @@ mod tests {
     fn parse_basic_struct_def() {
         let s = r#"typedef struct {
             char field;
+        } Foo;"#;
+
+        let mut parser = Parser::new(s);
+
+        let result = parser.parse_typedef().unwrap();
+    }
+
+    #[test]
+    fn parse_basic_struct_def_with_comments() {
+        let s = r#"
+        // My comment
+        typedef struct { // comment
+            char field; /* single line multiline comment */
+            /*
+            multiline comment
+             */
         } Foo;"#;
 
         let mut parser = Parser::new(s);
