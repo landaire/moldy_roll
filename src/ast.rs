@@ -991,7 +991,6 @@ mod tests {
             span: 0..10,
         };
 
-        println!("{:#?}\n{:#?}", result.typ, expected.typ);
         assert!(result.typ == expected.typ);
         assert!(result.span == (0..s.len() - 1));
     }
