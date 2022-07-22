@@ -1,5 +1,5 @@
 use crate::error::{ParserErrorInternal, ParserErrorWithSpan};
-use crate::tokens::Token;
+use crate::tokens::{Operator, Token};
 use peekmore::{PeekMore, PeekMoreIterator};
 use std::iter::Peekable;
 use std::str::FromStr;
@@ -15,18 +15,20 @@ struct VarDecl<'source> {
     typ: Identifier<'source>,
     ident: Identifier<'source>,
     array_size: Option<SmallVec<[u8; 2]>>,
+    is_local: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct StructMember<'source> {
-    decl: VarDecl<'source>,
-    condition: Option<u8>,
+struct Expression<'source> {
+    lhs: Box<AstNode<'source>>,
+    operator: Option<Operator>,
+    rhs: Option<Box<Expression<'source>>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct StructDef<'source> {
     idents: SmallVec<[Identifier<'source>; 3]>,
-    members: SmallVec<[StructMember<'source>; 8]>,
+    members: Vec<AstNode<'source>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -66,9 +68,9 @@ struct Identifier<'source>(&'source str);
 
 #[derive(Debug, Eq, PartialEq)]
 enum AstNodeType<'source> {
-    VarDecl,
+    VarDecl(VarDecl<'source>),
     FuncCall,
-    Expression,
+    Expression(Expression<'source>),
     Statement,
     StructDef(StructDef<'source>),
     EnumDef,
@@ -78,6 +80,25 @@ enum AstNodeType<'source> {
     OctalLiteral(u64),
     BinaryLiteral(u64),
     DecimalLiteral(u64),
+    ControlFlow(ControlFlow<'source>),
+    UnaryExpression(UnaryExpression<'source>),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct UnaryExpression<'source> {
+    op: Operator,
+    expr: Box<AstNode<'source>>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct IfCondition<'source> {
+    condition: Expression<'source>,
+    body: Vec<AstNode<'source>>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ControlFlow<'source> {
+    If(IfCondition<'source>),
 }
 
 trait CharExt {
@@ -251,14 +272,15 @@ impl<'source> Parser<'source> {
 
     fn parse_struct_members(
         &mut self,
-    ) -> Result<SmallVec<[StructMember<'source>; 8]>, ParserErrorInternal<'source>> {
-        let mut members = SmallVec::new();
+    ) -> Result<Vec<AstNode<'source>>, ParserErrorInternal<'source>> {
+        let mut members = Vec::with_capacity(8);
         loop {
             self.chomp_ignored_tokens()?;
 
             // Parse the first identifier (type) if it exists
             let next = self.peek()?;
             if next.is_ident_start() {
+                let start = self.position;
                 let typ = self.parse_ident()?;
 
                 self.chomp_ignored_tokens()?;
@@ -270,14 +292,18 @@ impl<'source> Parser<'source> {
 
                     self.chomp_ignored_tokens()?;
 
-                    members.push(StructMember {
-                        decl: VarDecl {
-                            typ: typ.as_ident().expect("expected ident").clone(),
-                            ident: name.as_ident().expect("expected ident").clone(),
-                            array_size: None,
-                        },
-                        condition: None,
-                    });
+                    let node_ty = VarDecl {
+                        typ: typ.as_ident().expect("expected ident").clone(),
+                        ident: name.as_ident().expect("expected ident").clone(),
+                        array_size: None,
+                        is_local: false,
+                    };
+                    let ast_node = AstNode {
+                        typ: AstNodeType::VarDecl(node_ty),
+                        span: (start..self.position),
+                    };
+
+                    members.push(ast_node);
 
                     let next = self.next()?;
                     let next_token = next
@@ -286,6 +312,9 @@ impl<'source> Parser<'source> {
                     match next_token {
                         Token::Semicolon => {
                             continue;
+                        }
+                        Token::AngleBracketOpen => {
+                            todo!();
                         }
                         _other => {
                             return Err(ParserErrorInternal::UnexpectedCharacter(next));
@@ -297,18 +326,7 @@ impl<'source> Parser<'source> {
             }
 
             // If we didn't get an ident, we should be expecting a closing bracket
-            let next_token = next
-                .try_into()
-                .map_err(|_e| ParserErrorInternal::UnexpectedCharacter(next))?;
-            match next_token {
-                Token::CloseBrace => {
-                    self.next()?;
-                    break;
-                }
-                _other => {
-                    return Err(ParserErrorInternal::UnexpectedCharacter(next));
-                }
-            }
+            self.expect_next_token(Token::CloseBrace)?;
         }
 
         Ok(members)
@@ -344,7 +362,7 @@ impl<'source> Parser<'source> {
 
                 let typ = AstNodeType::StructDef(StructDef {
                     idents: smallvec![ident.unwrap().as_ident().expect("expected ident").clone()],
-                    members: SmallVec::new(),
+                    members: Vec::new(),
                 });
 
                 return Ok(AstNode {
@@ -359,7 +377,7 @@ impl<'source> Parser<'source> {
         let next_token = next
             .try_into()
             .map_err(|_e| ParserErrorInternal::UnexpectedCharacter(next))?;
-        let mut struct_members = SmallVec::new();
+        let mut struct_members = Vec::new();
 
         match next_token {
             Token::OpenBrace => {
@@ -454,6 +472,73 @@ impl<'source> Parser<'source> {
         }
     }
 
+    fn parse_expression(&mut self) -> Result<AstNode<'source>, ParserErrorInternal> {
+        // at this point we've already parsed the `if` token...
+        self.chomp_ignored_tokens();
+
+        let start = self.position;
+
+        // Parse an identifier
+        let next_char = self.peek()?;
+        let next_token = self.peek_token();
+        let lhs = if next_char.is_ident_start() {
+            self.parse_ident()?
+        } else if next_char.is_ascii_digit() {
+            self.parse_number()?
+        } else {
+            // We may have an operator or symbol
+            let next_token = next_token?;
+            match next_token {
+                Token::OpenParen => {
+                    todo!();
+                }
+                other if other.as_unary_operator().is_some() => {
+                    let inner_expr = AstNode {
+                            typ: AstNodeType::UnaryExpression(UnaryExpression {
+                                op: other
+                                    .as_unary_operator()
+                                    .expect("operator should be unary operator"),
+                                expr: Box::new(self.parse_expression()?),
+                            }),
+                            span: start..self.position,
+                        };
+
+                    inner_expr
+                }
+                other => {
+                    return Err(ParserErrorInternal::UnexpectedCharacter(next_char));
+                }
+            }
+        };
+
+        let expr_ty = Expression {
+            lhs: Box::new(lhs),
+            operator: None,
+            rhs: None,
+        };
+
+        Ok(AstNode {
+            typ: AstNodeType::Expression(expr_ty),
+            span: start..self.position,
+        })
+    }
+
+    fn parse_if_condition(&mut self) -> Result<AstNode<'source>, ParserErrorInternal> {
+        // at this point we've already parsed the `if` token...
+        self.chomp_ignored_tokens();
+
+        self.peek_expect_token(Token::OpenParen)?;
+
+        let condition = self.parse_expression();
+
+        self.chomp_ignored_tokens();
+
+        // Check for an opening brace
+        if self.peek_expect_token(token)
+
+        Ok(())
+    }
+
     fn parse_root(&mut self) -> Result<AstNode<'source>, ParserErrorWithSpan> {
         todo!();
     }
@@ -469,6 +554,48 @@ impl<'source> Parser<'source> {
         }
 
         next
+    }
+
+    fn next_token(&mut self) -> Result<Token, ParserErrorInternal<'source>> {
+        let next = self.next()?;
+
+        next.try_into()
+            .map_err(|_e| ParserErrorInternal::UnexpectedCharacter(next))
+    }
+
+    fn peek_token(&mut self) -> Result<Token, ParserErrorInternal<'source>> {
+        let next = self.peek()?;
+
+        next.try_into()
+            .map_err(|_e| ParserErrorInternal::UnexpectedCharacter(next))
+    }
+
+    fn peek_expect_token(&mut self, token: Token) -> Result<Token, ParserErrorInternal<'source>> {
+        let next = self.peek()?;
+
+        let next_token = next
+            .try_into()
+            .map_err(|_e| ParserErrorInternal::UnexpectedCharacter(next))?;
+
+        if next_token != token {
+            return Err(ParserErrorInternal::UnexpectedCharacter(next));
+        }
+
+        Ok(next_token)
+    }
+
+    fn expect_next_token(&mut self, token: Token) -> Result<Token, ParserErrorInternal<'source>> {
+        let next = self.next()?;
+
+        let next_token = next
+            .try_into()
+            .map_err(|_e| ParserErrorInternal::UnexpectedCharacter(next))?;
+
+        if next_token != token {
+            return Err(ParserErrorInternal::UnexpectedCharacter(next));
+        }
+
+        Ok(next_token)
     }
 
     fn advance_while<F: Fn(&char) -> bool>(&mut self, func: F) -> usize {
@@ -561,13 +688,14 @@ mod tests {
         let result = parser.parse_typedef().unwrap();
 
         let idents = smallvec![Identifier("Foo")];
-        let members = smallvec![StructMember {
-            decl: VarDecl {
+        let members = vec![AstNode {
+            typ: AstNodeType::VarDecl(VarDecl {
                 typ: Identifier("char"),
                 ident: Identifier("field"),
                 array_size: None,
-            },
-            condition: None
+                is_local: false,
+            }),
+            span: 0..1,
         }];
 
         let expected = AstNodeType::StructDef(StructDef { idents, members });
@@ -593,13 +721,14 @@ mod tests {
         let result = parser.parse_typedef().unwrap();
 
         let idents = smallvec![Identifier("Foo")];
-        let members = smallvec![StructMember {
-            decl: VarDecl {
+        let members = vec![AstNode {
+            typ: AstNodeType::VarDecl(VarDecl {
                 typ: Identifier("char"),
                 ident: Identifier("field"),
                 array_size: None,
-            },
-            condition: None
+                is_local: false,
+            }),
+            span: 0..1,
         }];
 
         let expected = AstNodeType::StructDef(StructDef { idents, members });
@@ -608,4 +737,72 @@ mod tests {
         assert!(result.span == (s.find("typedef").unwrap()..s.len()));
     }
 
+    fn parse_if_condition() {
+        let s = r#"
+            if (foo)
+                char field;
+        "#;
+
+        let mut parser = Parser::new(s);
+
+        let result = parser.parse_if_condition().unwrap();
+
+        let idents = smallvec![Identifier("Foo")];
+        let body = smallvec![AstNode {
+            typ: AstNodeType::VarDecl(VarDecl {
+                typ: Identifier("char"),
+                ident: Identifier("field"),
+                array_size: None,
+                is_local: false,
+            }),
+            span: 0..1,
+        }];
+
+        let typ = AstNodeType::Identifier("foo");
+
+        let expected = AstNodeType::ControlFlow(ControlFlow::If(IfCondition {
+            condition: Expression {
+                lhs: AstNode {
+                    typ: Box::new(typ),
+                    span: (0..5),
+                },
+                operator: None,
+                rhs: None,
+            },
+            body,
+        }));
+
+        assert!(result.typ == expected);
+        assert!(result.span == (s.find("if").unwrap()..s.len()));
+    }
+
+    // #[test]
+    fn struct_with_conditional_field() {
+        let s = r#"
+        // start comment
+        typedef struct {
+            if (foo)
+                char field;
+        } Foo;"#;
+
+        let mut parser = Parser::new(s);
+
+        let result = parser.parse_typedef().unwrap();
+
+        let idents = smallvec![Identifier("Foo")];
+        let members = vec![AstNode {
+            typ: AstNodeType::VarDecl(VarDecl {
+                typ: Identifier("char"),
+                ident: Identifier("field"),
+                array_size: None,
+                is_local: false,
+            }),
+            span: 0..1,
+        }];
+
+        let expected = AstNodeType::StructDef(StructDef { idents, members });
+
+        assert!(result.typ == expected);
+        assert!(result.span == (s.find("typedef").unwrap()..s.len()));
+    }
 }
