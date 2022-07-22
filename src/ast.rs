@@ -297,6 +297,10 @@ impl<'source> Parser<'source> {
     fn parse_var_decl(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
         let start = self.position();
         let typ = self.parse_ident()?;
+        if typ.as_ident().unwrap().is_keyword_if() {
+            self.rewind_to(start);
+            return self.parse_if_condition();
+        }
 
         self.chomp_ignored_tokens()?;
 
@@ -512,7 +516,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn parse_operator(&self) -> Result<Operator, ParserErrorInternal> {
+    fn parse_operator(&self) -> Result<Operator, ParserErrorInternal<'source>> {
         let first_token = self.next_token()?;
         let next_char = self.peek()?;
         match first_token {
@@ -603,7 +607,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn parse_expression(&self) -> Result<AstNode<'source>, ParserErrorInternal> {
+    fn parse_expression(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
         self.chomp_ignored_tokens()?;
         let start = self.position();
 
@@ -666,7 +670,7 @@ impl<'source> Parser<'source> {
         })
     }
 
-    fn parse_if_condition(&self) -> Result<AstNode<'source>, ParserErrorInternal> {
+    fn parse_if_condition(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
         self.chomp_ignored_tokens()?;
 
         let start = self.position();
@@ -724,7 +728,7 @@ impl<'source> Parser<'source> {
         })
     }
 
-    fn parse_any(&self) -> Result<AstNode<'source>, ParserErrorInternal> {
+    fn parse_any(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
         self.chomp_ignored_tokens()?;
 
         let next_char = self.peek()?;
@@ -995,7 +999,7 @@ mod tests {
         assert!(result.span == (0..s.len() - 1));
     }
 
-    // #[test]
+    #[test]
     fn struct_with_conditional_field() {
         let s = r#"
         // start comment
@@ -1004,19 +1008,42 @@ mod tests {
                 char field;
         } Foo;"#;
 
-        let mut parser = Parser::new(s);
+        let parser = Parser::new(s);
 
         let result = parser.parse_typedef().unwrap();
 
         let idents = smallvec![Identifier("Foo")];
-        let members = vec![AstNode {
+
+        let if_body = vec![AstNode {
             typ: AstNodeType::VarDecl(VarDecl {
                 typ: Identifier("char"),
                 ident: Identifier("field"),
                 array_size: None,
                 is_local: false,
             }),
-            span: 0..1,
+            span: 88..98,
+        }];
+
+        let if_expression_typ = AstNodeType::Identifier(Identifier("foo"));
+
+        let expected_if = AstNodeType::ControlFlow(ControlFlow::If(IfCondition {
+            condition: Box::new(AstNode {
+                typ: AstNodeType::Expression(Expression {
+                    lhs: Box::new(AstNode {
+                        typ: if_expression_typ,
+                        span: (67..70),
+                    }),
+                    operator: None,
+                    rhs: None,
+                }),
+                span: 67..70,
+            }),
+            body: if_body,
+        }));
+
+        let members = vec![AstNode {
+            typ: expected_if,
+            span: 63..99,
         }];
 
         let expected = AstNodeType::StructDef(StructDef { idents, members });
