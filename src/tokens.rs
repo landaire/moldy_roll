@@ -33,6 +33,8 @@ impl TryFrom<char> for Token {
             '+' => Token::Operator(Operator::Add),
             '^' => Token::Operator(Operator::Xor),
             '|' => Token::Operator(Operator::BitOr),
+            '&' => Token::Operator(Operator::BitAnd),
+            '~' => Token::Operator(Operator::BitNot),
             '!' => Token::Operator(Operator::Not),
             '=' => Token::Operator(Operator::Assignment),
             other if other.is_ascii_whitespace() => Token::Whitespace,
@@ -74,6 +76,8 @@ pub(crate) enum Operator {
     LogicalAnd,
     LogicalEquals,
     LogicalNotEquals,
+    LogicalLessThan,
+    LogicalGreaterThan,
     Not,
     Assignment,
 }

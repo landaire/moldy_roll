@@ -1,6 +1,7 @@
 use crate::error::{ParserErrorInternal, ParserErrorWithSpan};
 use crate::tokens::{Operator, Token};
 use peekmore::{PeekMore, PeekMoreIterator};
+use std::cell::RefCell;
 use std::iter::Peekable;
 use std::str::FromStr;
 
@@ -22,7 +23,7 @@ struct VarDecl<'source> {
 struct Expression<'source> {
     lhs: Box<AstNode<'source>>,
     operator: Option<Operator>,
-    rhs: Option<Box<Expression<'source>>>,
+    rhs: Option<Box<AstNode<'source>>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -66,6 +67,18 @@ impl<'source> AstNode<'source> {
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct Identifier<'source>(&'source str);
 
+impl<'source> Identifier<'source> {
+    fn is_keyword_if(&self) -> bool {
+        self.0 == "if"
+    }
+}
+
+macro_rules! ident {
+    ($ident:expr) => {
+        Identifier($ident)
+    };
+}
+
 #[derive(Debug, Eq, PartialEq)]
 enum AstNodeType<'source> {
     VarDecl(VarDecl<'source>),
@@ -92,7 +105,7 @@ struct UnaryExpression<'source> {
 
 #[derive(Debug, Eq, PartialEq)]
 struct IfCondition<'source> {
-    condition: Expression<'source>,
+    condition: Box<AstNode<'source>>,
     body: Vec<AstNode<'source>>,
 }
 
@@ -114,7 +127,7 @@ impl CharExt for char {
 struct Parser<'source> {
     input: &'source str,
     iter: Vec<char>,
-    position: usize,
+    position: RefCell<usize>,
     line_num: usize,
 }
 
@@ -124,13 +137,17 @@ impl<'source> Parser<'source> {
         Parser {
             input,
             iter,
-            position: 0,
+            position: RefCell::new(0),
             line_num: 1,
         }
     }
 
-    fn parse_number(&mut self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
-        let start = self.position;
+    fn position(&self) -> usize {
+        *self.position.borrow()
+    }
+
+    fn parse_number(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
+        let start = self.position();
 
         let number_start = self.next()?;
         let number = if number_start == '0' {
@@ -139,7 +156,7 @@ impl<'source> Parser<'source> {
                 Ok('x') => {
                     self.next();
 
-                    let start = self.position;
+                    let start = self.position();
 
                     let end =
                         self.advance_while(|c| matches!(c, 'a'..='f' | 'A'..='F' | '0'..='9'));
@@ -152,7 +169,7 @@ impl<'source> Parser<'source> {
                 Ok('b') => {
                     self.next();
 
-                    let start = self.position;
+                    let start = self.position();
 
                     let end = self.advance_while(|c| matches!(c, '0'..='1'));
                     AstNodeType::BinaryLiteral(
@@ -161,7 +178,7 @@ impl<'source> Parser<'source> {
                     )
                 }
                 Ok('1'..='7') => {
-                    let start = self.position;
+                    let start = self.position();
                     let end = self.advance_while(|c| matches!(c, '0'..='9'));
                     AstNodeType::OctalLiteral(
                         u64::from_str_radix(&self.input[start..end], 8)
@@ -184,21 +201,21 @@ impl<'source> Parser<'source> {
 
         Ok(AstNode {
             typ: number,
-            span: start..self.position,
+            span: start..self.position(),
         })
     }
 
-    fn chomp_whitespace(&mut self) -> bool {
-        let start = self.position;
+    fn chomp_whitespace(&self) -> bool {
+        let start = self.position();
         self.advance_while(char::is_ascii_whitespace);
 
-        start != self.position
+        start != self.position()
     }
 
-    fn chomp_multiline_comment(&mut self) {}
+    fn chomp_multiline_comment(&self) {}
 
-    fn chomp_ignored_tokens(&mut self) -> Result<bool, ParserErrorInternal<'source>> {
-        let start = self.position;
+    fn chomp_ignored_tokens(&self) -> Result<bool, ParserErrorInternal<'source>> {
+        let start = self.position();
 
         loop {
             self.chomp_whitespace();
@@ -216,6 +233,7 @@ impl<'source> Parser<'source> {
                                     self.next(),
                                     Ok('\n') | Err(ParserErrorInternal::UnexpectedEndOfFile)
                                 ) {
+                                    println!("chomping line comment");
                                     // We reached either the end of file or the end
                                     // of this line -- we can stop chomping
                                     break;
@@ -229,13 +247,11 @@ impl<'source> Parser<'source> {
                                 if matches!(
                                     self.next(),
                                     Ok('*') | Err(ParserErrorInternal::UnexpectedEndOfFile)
+                                ) && matches!(
+                                    self.next(),
+                                    Ok('/') | Err(ParserErrorInternal::UnexpectedEndOfFile)
                                 ) {
-                                    if matches!(
-                                        self.next(),
-                                        Ok('/') | Err(ParserErrorInternal::UnexpectedEndOfFile)
-                                    ) {
-                                        break;
-                                    }
+                                    break;
                                 }
                             }
                         }
@@ -250,11 +266,11 @@ impl<'source> Parser<'source> {
             }
         }
 
-        Ok(start != self.position)
+        Ok(start != self.position())
     }
 
-    fn parse_ident(&mut self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
-        let start = self.position;
+    fn parse_ident(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
+        let start = self.position();
 
         // identifiers must start with a letter
         if !self.peek()?.is_ident_start() {
@@ -270,9 +286,55 @@ impl<'source> Parser<'source> {
         })
     }
 
-    fn parse_struct_members(
-        &mut self,
-    ) -> Result<Vec<AstNode<'source>>, ParserErrorInternal<'source>> {
+    fn parse_var_decl(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
+        let start = self.position();
+        let typ = self.parse_ident()?;
+
+        self.chomp_ignored_tokens()?;
+
+        // Parse the second identifier (name) if it exists
+        let next = self.peek()?;
+        if next.is_ident_start() {
+            let name = self.parse_ident()?;
+
+            self.chomp_ignored_tokens()?;
+
+            let node_ty = VarDecl {
+                typ: typ.as_ident().expect("expected ident").clone(),
+                ident: name.as_ident().expect("expected ident").clone(),
+                array_size: None,
+                is_local: false,
+            };
+            let ast_node = AstNode {
+                typ: AstNodeType::VarDecl(node_ty),
+                span: (start..self.position()),
+            };
+
+            self.chomp_ignored_tokens()?;
+
+            let next = self.peek()?;
+            let next_token = next
+                .try_into()
+                .map_err(|_e| ParserErrorInternal::UnexpectedCharacter(next))?;
+            match next_token {
+                Token::Semicolon => {
+                    let _ = self.next()?;
+                    return Ok(ast_node);
+                }
+                Token::AngleBracketOpen => {
+                    todo!();
+                }
+                _other => {
+                    println!("bad next token");
+                    return Err(ParserErrorInternal::UnexpectedCharacter(next));
+                }
+            }
+        } else {
+            return Err(ParserErrorInternal::UnexpectedCharacter(next));
+        }
+    }
+
+    fn parse_struct_members(&self) -> Result<Vec<AstNode<'source>>, ParserErrorInternal<'source>> {
         let mut members = Vec::with_capacity(8);
         loop {
             self.chomp_ignored_tokens()?;
@@ -280,63 +342,33 @@ impl<'source> Parser<'source> {
             // Parse the first identifier (type) if it exists
             let next = self.peek()?;
             if next.is_ident_start() {
-                let start = self.position;
-                let typ = self.parse_ident()?;
+                let var_decl = self.parse_var_decl()?;
+                members.push(var_decl);
 
-                self.chomp_ignored_tokens()?;
-
-                // Parse the second identifier (name) if it exists
                 let next = self.peek()?;
-                if next.is_ident_start() {
-                    let name = self.parse_ident()?;
-
-                    self.chomp_ignored_tokens()?;
-
-                    let node_ty = VarDecl {
-                        typ: typ.as_ident().expect("expected ident").clone(),
-                        ident: name.as_ident().expect("expected ident").clone(),
-                        array_size: None,
-                        is_local: false,
-                    };
-                    let ast_node = AstNode {
-                        typ: AstNodeType::VarDecl(node_ty),
-                        span: (start..self.position),
-                    };
-
-                    members.push(ast_node);
-
-                    let next = self.next()?;
-                    let next_token = next
-                        .try_into()
-                        .map_err(|_e| ParserErrorInternal::UnexpectedCharacter(next))?;
-                    match next_token {
-                        Token::Semicolon => {
-                            continue;
-                        }
-                        Token::AngleBracketOpen => {
-                            todo!();
-                        }
-                        _other => {
-                            return Err(ParserErrorInternal::UnexpectedCharacter(next));
-                        }
-                    }
-                } else {
-                    return Err(ParserErrorInternal::UnexpectedCharacter(next));
+                let next_token: Token = next
+                    .try_into()
+                    .map_err(|_e| ParserErrorInternal::UnexpectedCharacter('a'))?;
+                if next_token == Token::Semicolon {
+                    todo!();
                 }
+
+                continue;
             }
 
             // If we didn't get an ident, we should be expecting a closing bracket
             self.expect_next_token(Token::CloseBrace)?;
+            break;
         }
 
         Ok(members)
     }
 
     fn parse_struct(
-        &mut self,
+        &self,
         must_have_name: bool,
     ) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
-        let start = self.position;
+        let start = self.position();
 
         self.chomp_ignored_tokens()?;
 
@@ -367,7 +399,7 @@ impl<'source> Parser<'source> {
 
                 return Ok(AstNode {
                     typ,
-                    span: start..self.position,
+                    span: start..self.position(),
                 });
             }
         }
@@ -392,8 +424,8 @@ impl<'source> Parser<'source> {
         };
 
         let mut idents = SmallVec::new();
-        if ident.is_some() {
-            idents.push(ident.unwrap().as_ident().expect("expected ident").clone());
+        if let Some(ident) = ident {
+            idents.push(ident.as_ident().expect("expected ident").clone());
         }
 
         let s = StructDef {
@@ -403,14 +435,14 @@ impl<'source> Parser<'source> {
 
         Ok(AstNode {
             typ: AstNodeType::StructDef(s),
-            span: start..self.position,
+            span: start..self.position(),
         })
     }
 
-    fn parse_typedef(&mut self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
+    fn parse_typedef(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
         self.chomp_ignored_tokens()?;
 
-        let start = self.position;
+        let start = self.position();
 
         // Try parsing the "typedef" keyword
         let ident = self.parse_ident()?;
@@ -454,10 +486,10 @@ impl<'source> Parser<'source> {
                     .map_err(|_e| ParserErrorInternal::UnexpectedCharacter(next))?;
                 match next_token {
                     Token::Semicolon => {
-                        self.next();
+                        let _ = self.next();
 
                         s.span.start = start;
-                        s.span.end = self.position;
+                        s.span.end = self.position();
 
                         return Ok(s);
                     }
@@ -472,11 +504,100 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn parse_expression(&mut self) -> Result<AstNode<'source>, ParserErrorInternal> {
-        // at this point we've already parsed the `if` token...
-        self.chomp_ignored_tokens();
+    fn parse_operator(&self) -> Result<Operator, ParserErrorInternal> {
+        let first_token = self.next_token()?;
+        let next_char = self.peek()?;
+        match first_token {
+            Token::AngleBracketOpen => {
+                if next_char.is_ident_start() || next_char.is_ascii_whitespace() {
+                    return Ok(Operator::LogicalLessThan);
+                }
 
-        let start = self.position;
+                match self.peek_token()? {
+                    // Left shift
+                    Token::AngleBracketOpen => {
+                        // Consume the token
+                        let _ = self.next_token()?;
+                        return Ok(Operator::LeftShift);
+                    }
+                    Token::OpenParen | Token::Whitespace => {
+                        return Ok(Operator::LogicalLessThan);
+                    }
+                    other => {
+                        // anything else is an error
+                        return Err(ParserErrorInternal::UnexpectedCharacter(self.peek()?));
+                    }
+                }
+            }
+            Token::AngleBracketClose => {
+                if next_char.is_ident_start() || next_char.is_ascii_whitespace() {
+                    return Ok(Operator::LogicalGreaterThan);
+                }
+
+                match self.peek_token()? {
+                    // Right shift
+                    Token::AngleBracketClose => {
+                        // Consume the token
+                        let _ = self.next_token()?;
+                        return Ok(Operator::RightShift);
+                    }
+                    Token::OpenParen | Token::Whitespace => {
+                        return Ok(Operator::LogicalGreaterThan);
+                    }
+                    other => {
+                        // anything else is an error
+                        return Err(ParserErrorInternal::UnexpectedCharacter(self.peek()?));
+                    }
+                }
+            }
+            Token::Operator(Operator::BitAnd) => {
+                if next_char.is_ident_start() || next_char.is_ascii_whitespace() {
+                    return Ok(Operator::BitAnd);
+                }
+
+                match self.peek_token()? {
+                    // Left shift
+                    Token::Operator(Operator::BitAnd) => {
+                        // Consume the token
+                        let _ = self.next_token()?;
+                        return Ok(Operator::LogicalAnd);
+                    }
+                    Token::OpenParen | Token::Whitespace => {
+                        return Ok(Operator::BitAnd);
+                    }
+                    other => {
+                        // anything else is an error
+                        return Err(ParserErrorInternal::UnexpectedCharacter(self.peek()?));
+                    }
+                }
+            }
+            Token::Operator(Operator::Assignment) => {
+                if next_char.is_ident_start() || next_char.is_ascii_whitespace() {
+                    return Ok(Operator::Assignment);
+                }
+
+                match self.peek_token()? {
+                    Token::Operator(Operator::Assignment) => {
+                        // Consume the token
+                        let _ = self.next_token()?;
+                        return Ok(Operator::LogicalEquals);
+                    }
+                    Token::OpenParen | Token::Whitespace | Token::Quote => {
+                        return Ok(Operator::Assignment);
+                    }
+                    other => {
+                        // anything else is an error
+                        return Err(ParserErrorInternal::UnexpectedCharacter(self.peek()?));
+                    }
+                }
+            }
+            _ => todo!(),
+        }
+    }
+
+    fn parse_expression(&self) -> Result<AstNode<'source>, ParserErrorInternal> {
+        self.chomp_ignored_tokens()?;
+        let start = self.position();
 
         // Parse an identifier
         let next_char = self.peek()?;
@@ -494,14 +615,14 @@ impl<'source> Parser<'source> {
                 }
                 other if other.as_unary_operator().is_some() => {
                     let inner_expr = AstNode {
-                            typ: AstNodeType::UnaryExpression(UnaryExpression {
-                                op: other
-                                    .as_unary_operator()
-                                    .expect("operator should be unary operator"),
-                                expr: Box::new(self.parse_expression()?),
-                            }),
-                            span: start..self.position,
-                        };
+                        typ: AstNodeType::UnaryExpression(UnaryExpression {
+                            op: other
+                                .as_unary_operator()
+                                .expect("operator should be unary operator"),
+                            expr: Box::new(self.parse_expression()?),
+                        }),
+                        span: start..self.position(),
+                    };
 
                     inner_expr
                 }
@@ -511,66 +632,152 @@ impl<'source> Parser<'source> {
             }
         };
 
+        self.chomp_ignored_tokens()?;
+
+        // We might have an operator here
+        let (operator, rhs) = match self.peek_token() {
+            Ok(Token::AngleBracketClose | Token::AngleBracketOpen | Token::Operator(_)) => {
+                let op = Some(self.parse_operator()?);
+                let rhs = Some(Box::new(self.parse_expression()?));
+
+                (op, rhs)
+            }
+            Err(e) => return Err(e),
+            other => (None, None),
+        };
+
         let expr_ty = Expression {
             lhs: Box::new(lhs),
-            operator: None,
-            rhs: None,
+            operator,
+            rhs,
         };
 
         Ok(AstNode {
             typ: AstNodeType::Expression(expr_ty),
-            span: start..self.position,
+            span: start..self.position(),
         })
     }
 
-    fn parse_if_condition(&mut self) -> Result<AstNode<'source>, ParserErrorInternal> {
-        // at this point we've already parsed the `if` token...
-        self.chomp_ignored_tokens();
+    fn parse_if_condition(&self) -> Result<AstNode<'source>, ParserErrorInternal> {
+        self.chomp_ignored_tokens()?;
 
-        self.peek_expect_token(Token::OpenParen)?;
+        let start = self.position();
+        // Parse the `if` keyword
+        let ident = self.parse_ident()?;
+        let ident = ident.as_ident().expect("identifier expected");
+        if ident.0 != "if" {
+            return Err(
+                crate::error::ParserErrorInternal::UnexpectedWithDescription("expected `if`"),
+            );
+        }
 
-        let condition = self.parse_expression();
+        self.chomp_ignored_tokens()?;
 
-        self.chomp_ignored_tokens();
+        self.expect_next_token(Token::OpenParen)?;
+
+        let condition = self.parse_expression()?;
+
+        self.expect_next_token(Token::CloseParen)?;
+
+        self.chomp_ignored_tokens()?;
 
         // Check for an opening brace
-        if self.peek_expect_token(token)
+        let body = if self.peek_expect_token(Token::OpenBrace).is_ok() {
+            // we have multiple statements in the if condition's body
+            let mut statements = vec![];
+            loop {
+                match self.peek_expect_token(Token::CloseBrace) {
+                    Err(ParserErrorInternal::UnexpectedEndOfFile) => {
+                        // We've reached the end of the file but were expecting a closing brace
+                        return Err(ParserErrorInternal::UnexpectedEndOfFile);
+                    }
+                    Ok(_) => {
+                        break;
+                    }
+                    _other => {
+                        // We don't care if we reached an unexpected token -- so long as it's not an EOF
+                    }
+                }
 
-        Ok(())
+                statements.push(self.parse_any()?);
+            }
+
+            statements
+        } else {
+            vec![self.parse_any()?]
+        };
+
+        Ok(AstNode {
+            typ: AstNodeType::ControlFlow(ControlFlow::If(IfCondition {
+                condition: Box::new(condition),
+                body,
+            })),
+            span: start..self.position(),
+        })
     }
 
-    fn parse_root(&mut self) -> Result<AstNode<'source>, ParserErrorWithSpan> {
-        todo!();
+    fn parse_any(&self) -> Result<AstNode<'source>, ParserErrorInternal> {
+        self.chomp_ignored_tokens()?;
+
+        let next_char = self.peek()?;
+        if next_char.is_ident_start() {
+            // Record the position so we can rewind once we figure out what we're
+            // dealing with
+
+            let start = self.position();
+
+            // We have an identifier that may be a function call or var declaration
+            let ident = self.parse_ident()?;
+            let ident = ident.as_ident().expect("expected identifier");
+            self.chomp_whitespace();
+
+            if ident.is_keyword_if() {
+                self.rewind_to(start);
+
+                return self.parse_if_condition();
+            }
+
+            self.chomp_ignored_tokens()?;
+
+            // We may have another identifier -- that indiciates a variable declaration
+            let next_char = self.peek()?;
+            if next_char.is_ident_start() {
+                self.rewind_to(start);
+                return self.parse_var_decl();
+            }
+        }
+
+        todo!()
     }
 
-    fn next(&mut self) -> Result<char, ParserErrorInternal<'source>> {
+    fn next(&self) -> Result<char, ParserErrorInternal<'source>> {
         let next = self
             .iter
-            .get(self.position)
+            .get(self.position())
             .cloned()
             .ok_or(ParserErrorInternal::UnexpectedEndOfFile);
         if next.is_ok() {
-            self.position += 1;
+            *self.position.borrow_mut() += 1;
         }
 
         next
     }
 
-    fn next_token(&mut self) -> Result<Token, ParserErrorInternal<'source>> {
+    fn next_token(&self) -> Result<Token, ParserErrorInternal<'source>> {
         let next = self.next()?;
 
         next.try_into()
             .map_err(|_e| ParserErrorInternal::UnexpectedCharacter(next))
     }
 
-    fn peek_token(&mut self) -> Result<Token, ParserErrorInternal<'source>> {
+    fn peek_token(&self) -> Result<Token, ParserErrorInternal<'source>> {
         let next = self.peek()?;
 
         next.try_into()
             .map_err(|_e| ParserErrorInternal::UnexpectedCharacter(next))
     }
 
-    fn peek_expect_token(&mut self, token: Token) -> Result<Token, ParserErrorInternal<'source>> {
+    fn peek_expect_token(&self, token: Token) -> Result<Token, ParserErrorInternal<'source>> {
         let next = self.peek()?;
 
         let next_token = next
@@ -584,7 +791,7 @@ impl<'source> Parser<'source> {
         Ok(next_token)
     }
 
-    fn expect_next_token(&mut self, token: Token) -> Result<Token, ParserErrorInternal<'source>> {
+    fn expect_next_token(&self, token: Token) -> Result<Token, ParserErrorInternal<'source>> {
         let next = self.next()?;
 
         let next_token = next
@@ -598,23 +805,32 @@ impl<'source> Parser<'source> {
         Ok(next_token)
     }
 
-    fn advance_while<F: Fn(&char) -> bool>(&mut self, func: F) -> usize {
-        while self.position < self.iter.len() && func(&self.iter[self.position]) {
-            self.position += 1;
+    fn advance_while<F: Fn(&char) -> bool>(&self, func: F) -> usize {
+        while self.position() < self.iter.len() && func(&self.iter[self.position()]) {
+            let mut pos = self.position.borrow_mut();
+            *pos += 1;
         }
 
-        self.position
+        self.position()
     }
 
-    fn peek(&mut self) -> Result<char, ParserErrorInternal<'source>> {
+    fn peek(&self) -> Result<char, ParserErrorInternal<'source>> {
         self.iter
-            .get(self.position)
+            .get(self.position())
             .cloned()
             .ok_or(ParserErrorInternal::UnexpectedEndOfFile)
     }
 
-    fn rewind(&mut self) {
-        self.position = self.position.saturating_sub(1)
+    fn select_range(&self, range: Range<usize>) -> &[char] {
+        &self.iter[range]
+    }
+
+    fn rewind(&self) {
+        *self.position.borrow_mut() = self.position().saturating_sub(1);
+    }
+
+    fn rewind_to(&self, pos: usize) {
+        *self.position.borrow_mut() = pos;
     }
 }
 
@@ -683,7 +899,7 @@ mod tests {
             char field;
         } Foo;"#;
 
-        let mut parser = Parser::new(s);
+        let parser = Parser::new(s);
 
         let result = parser.parse_typedef().unwrap();
 
@@ -695,7 +911,7 @@ mod tests {
                 array_size: None,
                 is_local: false,
             }),
-            span: 0..1,
+            span: 29..39,
         }];
 
         let expected = AstNodeType::StructDef(StructDef { idents, members });
@@ -728,7 +944,7 @@ mod tests {
                 array_size: None,
                 is_local: false,
             }),
-            span: 0..1,
+            span: 111..150,
         }];
 
         let expected = AstNodeType::StructDef(StructDef { idents, members });
@@ -737,38 +953,36 @@ mod tests {
         assert!(result.span == (s.find("typedef").unwrap()..s.len()));
     }
 
+    #[test]
     fn parse_if_condition() {
-        let s = r#"
-            if (foo)
-                char field;
-        "#;
+        let s = r#"if (foo)
+                char field;"#;
 
-        let mut parser = Parser::new(s);
+        let parser = Parser::new(s);
 
         let result = parser.parse_if_condition().unwrap();
 
-        let idents = smallvec![Identifier("Foo")];
-        let body = smallvec![AstNode {
+        let body = vec![AstNode {
             typ: AstNodeType::VarDecl(VarDecl {
                 typ: Identifier("char"),
                 ident: Identifier("field"),
                 array_size: None,
                 is_local: false,
             }),
-            span: 0..1,
+            span: 25..35,
         }];
 
-        let typ = AstNodeType::Identifier("foo");
+        let typ = AstNodeType::Identifier(Identifier("foo"));
 
         let expected = AstNodeType::ControlFlow(ControlFlow::If(IfCondition {
-            condition: Expression {
-                lhs: AstNode {
-                    typ: Box::new(typ),
-                    span: (0..5),
-                },
-                operator: None,
-                rhs: None,
-            },
+            condition: Box::new(AstNode {
+                typ: AstNodeType::Expression(Expression {
+                    lhs: Box::new(AstNode { typ, span: (4..7) }),
+                    operator: None,
+                    rhs: None,
+                }),
+                span: 4..7,
+            }),
             body,
         }));
 
