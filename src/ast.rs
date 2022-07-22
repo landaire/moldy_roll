@@ -47,6 +47,14 @@ impl<'source> AstNode<'source> {
         }
     }
 
+    fn as_expression(&self) -> Option<&Expression<'source>> {
+        if let AstNodeType::Expression(expression) = &self.typ {
+            Some(expression)
+        } else {
+            None
+        }
+    }
+
     fn as_struct(&self) -> Option<&StructDef<'source>> {
         if let AstNodeType::StructDef(s) = &self.typ {
             Some(s)
@@ -954,6 +962,71 @@ mod tests {
     }
 
     #[test]
+    fn parse_expression() {
+        let s = r#"foo && bar;"#;
+
+        let parser = Parser::new(s);
+
+        let result = parser.parse_expression().unwrap();
+
+        let expected = AstNode {
+            typ: AstNodeType::Expression(Expression {
+                lhs: Box::new(AstNode {
+                    typ: AstNodeType::Identifier(Identifier("foo")),
+                    span: (0..3),
+                }),
+                operator: Some(Operator::LogicalAnd),
+                rhs: Some(Box::new(AstNode {
+                    typ: AstNodeType::Expression(Expression {
+                        lhs: Box::new(AstNode {
+                            typ: AstNodeType::Identifier(Identifier("bar")),
+                            span: (7..10),
+                        }),
+                        operator: None,
+                        rhs: None,
+                    }),
+                    span: 7..10,
+                })),
+            }),
+            span: 0..10,
+        };
+
+        println!("{:#?}\n{:#?}", result.typ, expected.typ);
+        assert!(result.typ == expected.typ);
+        assert!(result.span == (0..s.len() - 1));
+    }
+
+    // #[test]
+    fn struct_with_conditional_field() {
+        let s = r#"
+        // start comment
+        typedef struct {
+            if (foo)
+                char field;
+        } Foo;"#;
+
+        let mut parser = Parser::new(s);
+
+        let result = parser.parse_typedef().unwrap();
+
+        let idents = smallvec![Identifier("Foo")];
+        let members = vec![AstNode {
+            typ: AstNodeType::VarDecl(VarDecl {
+                typ: Identifier("char"),
+                ident: Identifier("field"),
+                array_size: None,
+                is_local: false,
+            }),
+            span: 0..1,
+        }];
+
+        let expected = AstNodeType::StructDef(StructDef { idents, members });
+
+        assert!(result.typ == expected);
+        assert!(result.span == (s.find("typedef").unwrap()..s.len()));
+    }
+
+    #[test]
     fn parse_if_condition() {
         let s = r#"if (foo)
                 char field;"#;
@@ -988,35 +1061,5 @@ mod tests {
 
         assert!(result.typ == expected);
         assert!(result.span == (s.find("if").unwrap()..s.len()));
-    }
-
-    // #[test]
-    fn struct_with_conditional_field() {
-        let s = r#"
-        // start comment
-        typedef struct {
-            if (foo)
-                char field;
-        } Foo;"#;
-
-        let mut parser = Parser::new(s);
-
-        let result = parser.parse_typedef().unwrap();
-
-        let idents = smallvec![Identifier("Foo")];
-        let members = vec![AstNode {
-            typ: AstNodeType::VarDecl(VarDecl {
-                typ: Identifier("char"),
-                ident: Identifier("field"),
-                array_size: None,
-                is_local: false,
-            }),
-            span: 0..1,
-        }];
-
-        let expected = AstNodeType::StructDef(StructDef { idents, members });
-
-        assert!(result.typ == expected);
-        assert!(result.span == (s.find("typedef").unwrap()..s.len()));
     }
 }
