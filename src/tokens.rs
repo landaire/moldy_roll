@@ -1,7 +1,7 @@
 use crate::error::ParserErrorInternal;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub(crate) enum Token {
+pub enum Token {
     Semicolon,
     OpenBrace,
     CloseBrace,
@@ -60,8 +60,9 @@ impl Token {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub(crate) enum Operator {
+pub enum Operator {
     Add,
+    AddAssign,
     Subtract,
     Multiply,
     Divide,

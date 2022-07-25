@@ -23,15 +23,15 @@ pub struct VarDecl<'source> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Expression<'source> {
-    lhs: Box<AstNode<'source>>,
-    operator: Option<Operator>,
-    rhs: Option<Box<AstNode<'source>>>,
+    pub lhs: Box<AstNode<'source>>,
+    pub operator: Option<Operator>,
+    pub rhs: Option<Box<AstNode<'source>>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct StructDef<'source> {
-    idents: SmallVec<[Identifier<'source>; 3]>,
-    members: Vec<AstNode<'source>>,
+    pub idents: SmallVec<[Identifier<'source>; 3]>,
+    pub members: Vec<AstNode<'source>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -41,7 +41,7 @@ pub struct AstNode<'source> {
 }
 
 impl<'source> AstNode<'source> {
-    fn as_ident(&self) -> Option<&Identifier<'source>> {
+    pub fn as_ident(&self) -> Option<&Identifier<'source>> {
         if let AstNodeType::Identifier(ident) = &self.typ {
             Some(ident)
         } else {
@@ -49,7 +49,7 @@ impl<'source> AstNode<'source> {
         }
     }
 
-    fn as_expression(&self) -> Option<&Expression<'source>> {
+    pub fn as_expression(&self) -> Option<&Expression<'source>> {
         if let AstNodeType::Expression(expression) = &self.typ {
             Some(expression)
         } else {
@@ -57,7 +57,7 @@ impl<'source> AstNode<'source> {
         }
     }
 
-    fn as_struct(&self) -> Option<&StructDef<'source>> {
+    pub fn as_struct(&self) -> Option<&StructDef<'source>> {
         if let AstNodeType::StructDef(s) = &self.typ {
             Some(s)
         } else {
@@ -65,7 +65,7 @@ impl<'source> AstNode<'source> {
         }
     }
 
-    fn as_struct_mut(&mut self) -> Option<&mut StructDef<'source>> {
+    pub fn as_struct_mut(&mut self) -> Option<&mut StructDef<'source>> {
         if let AstNodeType::StructDef(s) = &mut self.typ {
             Some(s)
         } else {
@@ -75,7 +75,7 @@ impl<'source> AstNode<'source> {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Identifier<'source>(&'source str);
+pub struct Identifier<'source>(pub &'source str);
 
 impl<'source> Identifier<'source> {
     fn is_keyword_if(&self) -> bool {
@@ -539,7 +539,10 @@ impl<'source> Parser<'source> {
         let next_char = self.peek()?;
         match first_token {
             Token::AngleBracketOpen => {
-                if next_char.is_ident_start() || next_char.is_ascii_whitespace() {
+                if next_char.is_ident_start()
+                    || next_char.is_ascii_whitespace()
+                    || next_char.is_ascii_whitespace()
+                {
                     return Ok(Operator::LogicalLessThan);
                 }
 
@@ -560,7 +563,10 @@ impl<'source> Parser<'source> {
                 }
             }
             Token::AngleBracketClose => {
-                if next_char.is_ident_start() || next_char.is_ascii_whitespace() {
+                if next_char.is_ident_start()
+                    || next_char.is_ascii_whitespace()
+                    || next_char.is_ascii_whitespace()
+                {
                     return Ok(Operator::LogicalGreaterThan);
                 }
 
@@ -581,7 +587,10 @@ impl<'source> Parser<'source> {
                 }
             }
             Token::Operator(Operator::BitAnd) => {
-                if next_char.is_ident_start() || next_char.is_ascii_whitespace() {
+                if next_char.is_ident_start()
+                    || next_char.is_ascii_whitespace()
+                    || next_char.is_ascii_whitespace()
+                {
                     return Ok(Operator::BitAnd);
                 }
 
@@ -602,7 +611,10 @@ impl<'source> Parser<'source> {
                 }
             }
             Token::Operator(Operator::Assignment) => {
-                if next_char.is_ident_start() || next_char.is_ascii_whitespace() {
+                if next_char.is_ident_start()
+                    || next_char.is_ascii_whitespace()
+                    || next_char.is_ascii_whitespace()
+                {
                     return Ok(Operator::Assignment);
                 }
 
@@ -621,7 +633,30 @@ impl<'source> Parser<'source> {
                     }
                 }
             }
-            _ => todo!(),
+            Token::Operator(Operator::Add) => {
+                if next_char.is_ident_start()
+                    || next_char.is_ascii_whitespace()
+                    || next_char.is_ascii_whitespace()
+                {
+                    return Ok(Operator::Add);
+                }
+
+                match self.peek_token()? {
+                    Token::Operator(Operator::Assignment) => {
+                        // Consume the token
+                        let _ = self.next_token()?;
+                        return Ok(Operator::AddAssign);
+                    }
+                    Token::OpenParen | Token::Whitespace | Token::Quote => {
+                        return Ok(Operator::Add);
+                    }
+                    other => {
+                        // anything else is an error
+                        return Err(ParserErrorInternal::UnexpectedCharacter(self.peek()?));
+                    }
+                }
+            }
+            other => todo!("{:?}", other),
         }
     }
 
