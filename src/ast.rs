@@ -168,7 +168,7 @@ impl<'source> Parser<'source> {
             // If the number starts with 0, we may be parsing a hex, binary, or octal literal
             match self.peek() {
                 Ok('x') => {
-                    self.next();
+                    let _ = self.next()?;
 
                     let start = self.position();
 
@@ -181,7 +181,7 @@ impl<'source> Parser<'source> {
                     )
                 }
                 Ok('b') => {
-                    self.next();
+                    let _ = self.next()?;
 
                     let start = self.position();
 
@@ -199,10 +199,7 @@ impl<'source> Parser<'source> {
                             .expect("expected valid octal literal"),
                     )
                 }
-                _other => {
-                    let _ = self.next()?;
-                    AstNodeType::DecimalLiteral(0)
-                }
+                _other => AstNodeType::DecimalLiteral(0),
             }
         } else {
             // Parse a decimal number
@@ -347,7 +344,9 @@ impl<'source> Parser<'source> {
                 Token::Operator(Operator::Assignment) => {
                     let _ = self.next()?;
                     node_ty.assignment = Some(Box::new(self.parse_expression()?));
-                    panic!("{:?}", node_ty.assignment);
+
+                    self.chomp_ignored_tokens()?;
+                    self.expect_next_token(Token::Semicolon)?;
                 }
                 _other => {
                     return Err(ParserErrorInternal::UnexpectedCharacter(next));
@@ -665,7 +664,6 @@ impl<'source> Parser<'source> {
 
         self.chomp_ignored_tokens()?;
 
-
         // We might have an operator here
         let (operator, rhs) = match self.peek_token() {
             Ok(Token::AngleBracketClose | Token::AngleBracketOpen | Token::Operator(_)) => {
@@ -677,8 +675,6 @@ impl<'source> Parser<'source> {
             Err(e) => return Err(e),
             other => (None, None),
         };
-
-        panic!("yo1");
 
         let expr_ty = Expression {
             lhs: Box::new(lhs),
@@ -1148,26 +1144,24 @@ mod tests {
 
         let expected = AstNode {
             typ: AstNodeType::VarDecl(VarDecl {
-                typ: Identifier("char"),
-                ident: Identifier("field"),
+                typ: Identifier("int"),
+                ident: Identifier("x"),
                 array_size: None,
                 assignment: Some(Box::new(AstNode {
                     typ: AstNodeType::Expression(Expression {
                         lhs: Box::new(AstNode {
                             typ: AstNodeType::DecimalLiteral(0),
-                            span: 0..1,
+                            span: 14..15,
                         }),
                         operator: None,
                         rhs: None,
                     }),
-                    span: 0..1,
+                    span: 14..15,
                 })),
                 is_local: true,
             }),
-            span: 25..36,
+            span: 0..15,
         };
-
-        panic!("{:#?}\n{:#?}", result, expected);
 
         assert!(result.typ == expected.typ);
         assert!(result.span == (0..s.len()));
