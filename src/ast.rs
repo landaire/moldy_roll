@@ -3,39 +3,41 @@ use crate::tokens::{Operator, Token};
 use peekmore::{PeekMore, PeekMoreIterator};
 use std::cell::RefCell;
 use std::iter::Peekable;
+use std::net::AddrParseError;
 use std::str::FromStr;
 
 use std::{ops::Range, str::Chars};
 
 use smallvec::{smallvec, SmallVec};
 
-pub(crate) type Span = Range<usize>;
+pub type Span = Range<usize>;
 
 #[derive(Debug, PartialEq, Eq)]
-struct VarDecl<'source> {
-    typ: Identifier<'source>,
-    ident: Identifier<'source>,
-    array_size: Option<SmallVec<[u8; 2]>>,
-    is_local: bool,
+pub struct VarDecl<'source> {
+    pub typ: Identifier<'source>,
+    pub ident: Identifier<'source>,
+    pub array_size: Option<SmallVec<[u8; 2]>>,
+    pub assignment: Option<Box<AstNode<'source>>>,
+    pub is_local: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Expression<'source> {
+pub struct Expression<'source> {
     lhs: Box<AstNode<'source>>,
     operator: Option<Operator>,
     rhs: Option<Box<AstNode<'source>>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct StructDef<'source> {
+pub struct StructDef<'source> {
     idents: SmallVec<[Identifier<'source>; 3]>,
     members: Vec<AstNode<'source>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct AstNode<'source> {
-    typ: AstNodeType<'source>,
-    span: Span,
+    pub typ: AstNodeType<'source>,
+    pub span: Span,
 }
 
 impl<'source> AstNode<'source> {
@@ -73,11 +75,15 @@ impl<'source> AstNode<'source> {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-struct Identifier<'source>(&'source str);
+pub struct Identifier<'source>(&'source str);
 
 impl<'source> Identifier<'source> {
     fn is_keyword_if(&self) -> bool {
         self.0 == "if"
+    }
+
+    fn is_keyword_local(&self) -> bool {
+        self.0 == "local"
     }
 }
 
@@ -88,7 +94,7 @@ macro_rules! ident {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-enum AstNodeType<'source> {
+pub enum AstNodeType<'source> {
     VarDecl(VarDecl<'source>),
     FuncCall,
     Expression(Expression<'source>),
@@ -106,19 +112,19 @@ enum AstNodeType<'source> {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct UnaryExpression<'source> {
+pub struct UnaryExpression<'source> {
     op: Operator,
     expr: Box<AstNode<'source>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct IfCondition<'source> {
+pub struct IfCondition<'source> {
     condition: Box<AstNode<'source>>,
     body: Vec<AstNode<'source>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
-enum ControlFlow<'source> {
+pub enum ControlFlow<'source> {
     If(IfCondition<'source>),
 }
 
@@ -132,7 +138,7 @@ impl CharExt for char {
     }
 }
 
-struct Parser<'source> {
+pub(crate) struct Parser<'source> {
     input: &'source str,
     iter: Vec<char>,
     position: RefCell<usize>,
@@ -194,7 +200,7 @@ impl<'source> Parser<'source> {
                     )
                 }
                 _other => {
-                    self.next();
+                    let _ = self.next()?;
                     AstNodeType::DecimalLiteral(0)
                 }
             }
@@ -296,13 +302,19 @@ impl<'source> Parser<'source> {
 
     fn parse_var_decl(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
         let start = self.position();
-        let typ = self.parse_ident()?;
+        let mut typ = self.parse_ident()?;
         if typ.as_ident().unwrap().is_keyword_if() {
             self.rewind_to(start);
             return self.parse_if_condition();
         }
 
         self.chomp_ignored_tokens()?;
+
+        let is_local = typ.as_ident().unwrap().is_keyword_local();
+        if is_local {
+            typ = self.parse_ident()?;
+            self.chomp_ignored_tokens()?;
+        }
 
         // Parse the second identifier (name) if it exists
         let next = self.peek()?;
@@ -311,15 +323,12 @@ impl<'source> Parser<'source> {
 
             self.chomp_ignored_tokens()?;
 
-            let node_ty = VarDecl {
+            let mut node_ty = VarDecl {
                 typ: typ.as_ident().expect("expected ident").clone(),
                 ident: name.as_ident().expect("expected ident").clone(),
                 array_size: None,
-                is_local: false,
-            };
-            let ast_node = AstNode {
-                typ: AstNodeType::VarDecl(node_ty),
-                span: (start..self.position()),
+                assignment: None,
+                is_local,
             };
 
             self.chomp_ignored_tokens()?;
@@ -331,16 +340,26 @@ impl<'source> Parser<'source> {
             match next_token {
                 Token::Semicolon => {
                     let _ = self.next()?;
-                    return Ok(ast_node);
                 }
                 Token::AngleBracketOpen => {
                     todo!();
                 }
+                Token::Operator(Operator::Assignment) => {
+                    let _ = self.next()?;
+                    node_ty.assignment = Some(Box::new(self.parse_expression()?));
+                    panic!("{:?}", node_ty.assignment);
+                }
                 _other => {
-                    println!("bad next token");
                     return Err(ParserErrorInternal::UnexpectedCharacter(next));
                 }
             }
+
+            let ast_node = AstNode {
+                typ: AstNodeType::VarDecl(node_ty),
+                span: (start..self.position()),
+            };
+
+            return Ok(ast_node);
         } else {
             return Err(ParserErrorInternal::UnexpectedCharacter(next));
         }
@@ -646,6 +665,7 @@ impl<'source> Parser<'source> {
 
         self.chomp_ignored_tokens()?;
 
+
         // We might have an operator here
         let (operator, rhs) = match self.peek_token() {
             Ok(Token::AngleBracketClose | Token::AngleBracketOpen | Token::Operator(_)) => {
@@ -657,6 +677,8 @@ impl<'source> Parser<'source> {
             Err(e) => return Err(e),
             other => (None, None),
         };
+
+        panic!("yo1");
 
         let expr_ty = Expression {
             lhs: Box::new(lhs),
@@ -726,6 +748,25 @@ impl<'source> Parser<'source> {
             })),
             span: start..self.position(),
         })
+    }
+
+    pub fn parse(&self) -> Result<Vec<AstNode<'source>>, ParserErrorInternal<'source>> {
+        let mut nodes = vec![];
+        loop {
+            self.chomp_ignored_tokens()?;
+            if self.eof() {
+                break;
+            }
+
+            nodes.push(self.parse_any()?);
+
+            self.chomp_ignored_tokens()?;
+            if self.eof() {
+                break;
+            }
+        }
+
+        Ok(nodes)
     }
 
     fn parse_any(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
@@ -844,6 +885,10 @@ impl<'source> Parser<'source> {
     fn rewind_to(&self, pos: usize) {
         *self.position.borrow_mut() = pos;
     }
+
+    fn eof(&self) -> bool {
+        self.position() == self.input.len()
+    }
 }
 
 #[cfg(test)]
@@ -921,9 +966,10 @@ mod tests {
                 typ: Identifier("char"),
                 ident: Identifier("field"),
                 array_size: None,
+                assignment: None,
                 is_local: false,
             }),
-            span: 29..39,
+            span: 29..40,
         }];
 
         let expected = AstNodeType::StructDef(StructDef { idents, members });
@@ -954,9 +1000,10 @@ mod tests {
                 typ: Identifier("char"),
                 ident: Identifier("field"),
                 array_size: None,
+                assignment: None,
                 is_local: false,
             }),
-            span: 111..150,
+            span: 111..151,
         }];
 
         let expected = AstNodeType::StructDef(StructDef { idents, members });
@@ -1019,9 +1066,10 @@ mod tests {
                 typ: Identifier("char"),
                 ident: Identifier("field"),
                 array_size: None,
+                assignment: None,
                 is_local: false,
             }),
-            span: 88..98,
+            span: 88..99,
         }];
 
         let if_expression_typ = AstNodeType::Identifier(Identifier("foo"));
@@ -1066,9 +1114,10 @@ mod tests {
                 typ: Identifier("char"),
                 ident: Identifier("field"),
                 array_size: None,
+                assignment: None,
                 is_local: false,
             }),
-            span: 25..35,
+            span: 25..36,
         }];
 
         let typ = AstNodeType::Identifier(Identifier("foo"));
@@ -1087,5 +1136,40 @@ mod tests {
 
         assert!(result.typ == expected);
         assert!(result.span == (s.find("if").unwrap()..s.len()));
+    }
+
+    #[test]
+    fn parse_local_var_decl() {
+        let s = r#"local int x = 0;"#;
+
+        let parser = Parser::new(s);
+
+        let result = parser.parse_var_decl().unwrap();
+
+        let expected = AstNode {
+            typ: AstNodeType::VarDecl(VarDecl {
+                typ: Identifier("char"),
+                ident: Identifier("field"),
+                array_size: None,
+                assignment: Some(Box::new(AstNode {
+                    typ: AstNodeType::Expression(Expression {
+                        lhs: Box::new(AstNode {
+                            typ: AstNodeType::DecimalLiteral(0),
+                            span: 0..1,
+                        }),
+                        operator: None,
+                        rhs: None,
+                    }),
+                    span: 0..1,
+                })),
+                is_local: true,
+            }),
+            span: 25..36,
+        };
+
+        panic!("{:#?}\n{:#?}", result, expected);
+
+        assert!(result.typ == expected.typ);
+        assert!(result.span == (0..s.len()));
     }
 }

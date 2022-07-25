@@ -3,3 +3,4 @@
 mod ast;
 mod error;
 mod tokens;
+mod vm;
