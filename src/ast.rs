@@ -610,6 +610,30 @@ impl<'source> Parser<'source> {
                     }
                 }
             }
+            Token::Operator(Operator::BitOr) => {
+                if next_char.is_ident_start()
+                    || next_char.is_ascii_whitespace()
+                    || next_char.is_ascii_whitespace()
+                {
+                    return Ok(Operator::BitOr);
+                }
+
+                match self.peek_token()? {
+                    // Left shift
+                    Token::Operator(Operator::BitOr) => {
+                        // Consume the token
+                        let _ = self.next_token()?;
+                        return Ok(Operator::LogicalOr);
+                    }
+                    Token::OpenParen | Token::Whitespace => {
+                        return Ok(Operator::BitOr);
+                    }
+                    other => {
+                        // anything else is an error
+                        return Err(ParserErrorInternal::UnexpectedCharacter(self.peek()?));
+                    }
+                }
+            }
             Token::Operator(Operator::Assignment) => {
                 if next_char.is_ident_start()
                     || next_char.is_ascii_whitespace()

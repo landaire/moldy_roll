@@ -15,6 +15,7 @@ enum Value {
     I32(i32),
     U64(u64),
     I64(i64),
+    Bool(bool),
     String(String),
     Array(Vec<Value>),
 }
@@ -110,7 +111,6 @@ impl SourceTranslator {
                 | crate::ast::AstNodeType::OctalLiteral(lit)
                 | crate::ast::AstNodeType::BinaryLiteral(lit)
                 | crate::ast::AstNodeType::DecimalLiteral(lit) => {
-                    eprintln!("{:#?}", lit);
                     bytecode.push(Opcode::PushConst(Value::from_type_name("int32", *lit)));
                 }
                 _ => todo!(),
@@ -130,12 +130,15 @@ impl SourceTranslator {
                     crate::tokens::Operator::LeftShift => todo!(),
                     crate::tokens::Operator::RightShift => todo!(),
                     crate::tokens::Operator::LogicalNot => todo!(),
-                    crate::tokens::Operator::LogicalOr => todo!(),
+                    crate::tokens::Operator::LogicalOr => {
+                        // Logical or short circuits
+                        bytecode.push(Opcode::JumpIfTrue(9))
+                    }
                     crate::tokens::Operator::LogicalAnd => todo!(),
                     crate::tokens::Operator::LogicalEquals => todo!(),
                     crate::tokens::Operator::LogicalNotEquals => todo!(),
-                    crate::tokens::Operator::LogicalLessThan => todo!(),
-                    crate::tokens::Operator::LogicalGreaterThan => todo!(),
+                    crate::tokens::Operator::LogicalLessThan => bytecode.push(Opcode::LessThan),
+                    crate::tokens::Operator::LogicalGreaterThan => bytecode.push(Opcode::GreaterThan),
                     crate::tokens::Operator::Not => todo!(),
                     crate::tokens::Operator::Assignment => todo!(),
                 }
@@ -144,6 +147,8 @@ impl SourceTranslator {
             if let Some(rhs) = expression.rhs.as_ref() {
                 last_operator = expression.operator;
                 expression = rhs.as_expression().expect("rhs is not an expression");
+                eprintln!("{:#?}", expression);
+
             } else {
                 break;
             }
@@ -170,6 +175,9 @@ enum Opcode<'source> {
     Store(&'source str),
     Push(&'source str),
     PushConst(Value),
+    JumpIfTrue(usize),
+    GreaterThan,
+    LessThan,
 }
 
 #[cfg(test)]
@@ -191,6 +199,31 @@ mod tests {
         ];
 
         let vm = Vm::from_source(code);
+
+        assert!(vm.bytecode == expected);
+    }
+
+    #[test]
+    fn translate_complex_expression_to_opcode() {
+        let code = r#"int x = 2;
+        int test = x > 2 || x < 1;"#;
+
+        let expected = vec![
+            Opcode::PushConst(Value::I32(2)),
+            Opcode::DeclareLocal("x", false),
+            Opcode::Push("x"),
+            Opcode::PushConst(Value::I32(2)),
+            Opcode::GreaterThan,
+            Opcode::JumpIfTrue(9), // index of DeclareLocal("y")
+            Opcode::Push("x"),
+            Opcode::PushConst(Value::I32(1)),
+            Opcode::LessThan,
+            Opcode::DeclareLocal("y", false),
+        ];
+
+        let vm = Vm::from_source(code);
+
+        panic!("{:#?}\n{:#?}", vm.bytecode, expected);
 
         assert!(vm.bytecode == expected);
     }
