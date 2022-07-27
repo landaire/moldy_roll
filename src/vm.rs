@@ -1,41 +1,24 @@
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
+use wasm_encoder::{
+    CodeSection, Encode, ExportKind, ExportSection, Function, FunctionSection, Instruction, Module,
+    TypeSection, ValType,
+};
 
 use crate::{
     ast::{AstNode, Expression},
     error::ParserErrorInternal,
 };
 
-#[derive(Debug, Eq, PartialEq)]
-enum Value {
-    U8(u8),
-    I8(i8),
-    U16(u16),
-    I16(i16),
-    U32(u32),
-    I32(i32),
-    U64(u64),
-    I64(i64),
-    Bool(bool),
-    String(String),
-    Array(Vec<Value>),
-}
-
-impl Value {
-    pub fn from_type_name(name: &str, value: u64) -> Value {
-        match name {
-            "int" | "int32" | "long" | "INT" | "INT32" | "LONG" => {
-                Value::I32(value.try_into().expect("failed to convert value"))
-            }
-            _ => todo!(),
-        }
+fn type_name_to_value(name: &str) -> ValType {
+    match name {
+        "int" | "int32" | "long" | "INT" | "INT32" | "LONG" => ValType::I32,
+        _ => todo!(),
     }
 }
 
 struct Vm<'source> {
     definitions: Vec<AstNode<'source>>,
-    output: Vec<Value>,
-    bytecode: Vec<Opcode<'source>>,
-    stack: Vec<Value>,
+    bytecode: Vec<u8>,
 }
 
 impl<'source> Vm<'source> {
@@ -44,43 +27,44 @@ impl<'source> Vm<'source> {
 
         Vm {
             definitions: vec![],
-            output: vec![],
             bytecode,
-            stack: vec![],
         }
     }
-
-    pub fn eval(node: &AstNode<'source>, scope: Arc<RefCell<Scope>>) {}
 }
 
 struct SourceTranslator;
 
 impl SourceTranslator {
-    pub fn source_to_bytecode<'source>(text: &'source str) -> Vec<Opcode<'source>> {
+    pub fn source_to_bytecode<'source>(text: &'source str) -> Vec<u8> {
         let parser = crate::ast::Parser::new(text);
         let mut ast = parser.parse().expect("error occurred while parsing");
 
-        let mut bytecode = vec![];
+        let mut module = Module::new();
+        let mut types = TypeSection::new();
+        types.function(vec![], vec![ValType::I32]);
+        module.section(&types);
+
+        let mut functions = FunctionSection::new();
+        let type_index = 0;
+        functions.function(type_index);
+        module.section(&functions);
+
+        let mut exports = ExportSection::new();
+        exports.export("run", ExportKind::Func, type_index);
+        module.section(&exports);
+
+        let mut codes = CodeSection::new();
+        let locals = vec![];
+        let mut f = Function::new(locals);
 
         for node in ast {
             match node.typ {
                 crate::ast::AstNodeType::VarDecl(decl) => {
-                    if let Some(assignment) = decl.assignment {
-                        let expression = assignment
-                            .as_expression()
-                            .expect("assignment is not an expression?");
-
-                        Self::handle_expression(expression, &mut bytecode);
-                    } else {
-                        // TODO: handle structs
-                        bytecode.push(Opcode::PushConst(Value::from_type_name(decl.typ.0, 0)))
-                    }
-
-                    bytecode.push(Opcode::DeclareLocal(decl.ident.0, decl.is_local));
+                    todo!();
                 }
                 crate::ast::AstNodeType::FuncCall => todo!(),
                 crate::ast::AstNodeType::Expression(_) => todo!(),
-                crate::ast::AstNodeType::Statement => todo!(),
+                crate::ast::AstNodeType::Statement(_) => todo!(),
                 crate::ast::AstNodeType::StructDef(_) => todo!(),
                 crate::ast::AstNodeType::EnumDef => todo!(),
                 crate::ast::AstNodeType::FuncDef => todo!(),
@@ -89,95 +73,44 @@ impl SourceTranslator {
                 crate::ast::AstNodeType::OctalLiteral(_) => todo!(),
                 crate::ast::AstNodeType::BinaryLiteral(_) => todo!(),
                 crate::ast::AstNodeType::DecimalLiteral(_) => todo!(),
-                crate::ast::AstNodeType::ControlFlow(_) => todo!(),
+                crate::ast::AstNodeType::ControlFlow(control) => {
+                    todo!()
+                }
                 crate::ast::AstNodeType::UnaryExpression(_) => todo!(),
+                crate::ast::AstNodeType::Return(ret) => {
+                    Self::handle_expression(ret.as_expression().unwrap(), &mut f);
+                    f.instruction(&Instruction::End);
+                }
             }
         }
 
-        bytecode
+        codes.function(&f);
+        module.section(&codes);
+
+        module.finish()
     }
 
-    fn handle_expression<'source>(
-        mut expression: &Expression<'source>,
-        bytecode: &mut Vec<Opcode<'source>>,
-    ) {
-        let mut last_operator = None;
-        loop {
-            match &expression.lhs.typ {
-                crate::ast::AstNodeType::Identifier(ident) => {
-                    bytecode.push(Opcode::Push(ident.0));
-                }
-                crate::ast::AstNodeType::HexLiteral(lit)
-                | crate::ast::AstNodeType::OctalLiteral(lit)
-                | crate::ast::AstNodeType::BinaryLiteral(lit)
-                | crate::ast::AstNodeType::DecimalLiteral(lit) => {
-                    bytecode.push(Opcode::PushConst(Value::from_type_name("int32", *lit)));
-                }
-                _ => todo!(),
+    fn handle_expression<'source>(expression: &Expression, function: &mut Function) {
+        match &expression.lhs.typ {
+            crate::ast::AstNodeType::VarDecl(_) => todo!(),
+            crate::ast::AstNodeType::FuncCall => todo!(),
+            crate::ast::AstNodeType::Expression(_) => todo!(),
+            crate::ast::AstNodeType::Statement(_) => todo!(),
+            crate::ast::AstNodeType::Return(_) => todo!(),
+            crate::ast::AstNodeType::StructDef(_) => todo!(),
+            crate::ast::AstNodeType::EnumDef => todo!(),
+            crate::ast::AstNodeType::FuncDef => todo!(),
+            crate::ast::AstNodeType::Identifier(_) => todo!(),
+            crate::ast::AstNodeType::HexLiteral(lit)
+            | crate::ast::AstNodeType::OctalLiteral(lit)
+            | crate::ast::AstNodeType::BinaryLiteral(lit)
+            | crate::ast::AstNodeType::DecimalLiteral(lit) => {
+                function.instruction(&Instruction::I32Const(*lit as i32));
             }
-
-            if let Some(last_operator) = last_operator {
-                match last_operator {
-                    crate::tokens::Operator::Add => bytecode.push(Opcode::Add),
-                    crate::tokens::Operator::AddAssign => todo!(),
-                    crate::tokens::Operator::Subtract => todo!(),
-                    crate::tokens::Operator::Multiply => todo!(),
-                    crate::tokens::Operator::Divide => todo!(),
-                    crate::tokens::Operator::Xor => todo!(),
-                    crate::tokens::Operator::BitOr => todo!(),
-                    crate::tokens::Operator::BitAnd => todo!(),
-                    crate::tokens::Operator::BitNot => todo!(),
-                    crate::tokens::Operator::LeftShift => todo!(),
-                    crate::tokens::Operator::RightShift => todo!(),
-                    crate::tokens::Operator::LogicalNot => todo!(),
-                    crate::tokens::Operator::LogicalOr => {
-                        // Logical or short circuits
-                        bytecode.push(Opcode::JumpIfTrue(9))
-                    }
-                    crate::tokens::Operator::LogicalAnd => todo!(),
-                    crate::tokens::Operator::LogicalEquals => todo!(),
-                    crate::tokens::Operator::LogicalNotEquals => todo!(),
-                    crate::tokens::Operator::LogicalLessThan => bytecode.push(Opcode::LessThan),
-                    crate::tokens::Operator::LogicalGreaterThan => bytecode.push(Opcode::GreaterThan),
-                    crate::tokens::Operator::Not => todo!(),
-                    crate::tokens::Operator::Assignment => todo!(),
-                }
-            }
-
-            if let Some(rhs) = expression.rhs.as_ref() {
-                last_operator = expression.operator;
-                expression = rhs.as_expression().expect("rhs is not an expression");
-                eprintln!("{:#?}", expression);
-
-            } else {
-                break;
-            }
+            crate::ast::AstNodeType::ControlFlow(control) => {}
+            crate::ast::AstNodeType::UnaryExpression(_) => todo!(),
         }
     }
-
-    fn default_value_for_type(type_name: &str) -> Option<Value> {
-        match type_name {
-            "int" | "int32" | "long" | "INT" | "INT32" | "LONG" => Some(Value::I32(0)),
-            _ => None,
-        }
-    }
-}
-
-struct Scope {
-    parent: Arc<RefCell<Self>>,
-    vars: HashMap<String, Value>,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-enum Opcode<'source> {
-    DeclareLocal(&'source str, bool),
-    Add,
-    Store(&'source str),
-    Push(&'source str),
-    PushConst(Value),
-    JumpIfTrue(usize),
-    GreaterThan,
-    LessThan,
 }
 
 #[cfg(test)]
@@ -186,45 +119,47 @@ mod tests {
 
     #[test]
     fn translate_basic_expression_to_opcode() {
-        let code = r#"int x = 2;
-        int y = x + 2;"#;
+        let code = r#"
+        return 0x41;"#;
 
-        let expected = vec![
-            Opcode::PushConst(Value::I32(2)),
-            Opcode::DeclareLocal("x", false),
-            Opcode::Push("x"),
-            Opcode::PushConst(Value::I32(2)),
-            Opcode::Add,
-            Opcode::DeclareLocal("y", false),
-        ];
+        let expected_code = r#"(module
+  (type (;0;) (func (result i32)))
+  (func (;0;) (type 0) (result i32)
+    i32.const 65
+  )
+  (export "run" (func 0))
+)"#;
 
         let vm = Vm::from_source(code);
+        let result_code =
+            wasmprinter::print_bytes(&vm.bytecode).expect("failed to convert bytecode to string");
 
-        assert!(vm.bytecode == expected);
+        // Compile the expected code to bytecode, then back to avoid formatting issues
+        assert!(result_code == expected_code);
     }
 
     #[test]
-    fn translate_complex_expression_to_opcode() {
-        let code = r#"int x = 2;
-        int test = x > 2 || x < 1;"#;
+    fn translate_basic_expression_to_opcode() {
+        let code = r#"
+        int x = 0;
+        x += 2;"#;
 
-        let expected = vec![
-            Opcode::PushConst(Value::I32(2)),
-            Opcode::DeclareLocal("x", false),
-            Opcode::Push("x"),
-            Opcode::PushConst(Value::I32(2)),
-            Opcode::GreaterThan,
-            Opcode::JumpIfTrue(9), // index of DeclareLocal("y")
-            Opcode::Push("x"),
-            Opcode::PushConst(Value::I32(1)),
-            Opcode::LessThan,
-            Opcode::DeclareLocal("y", false),
-        ];
+        let expected_code = r#"(module
+  (type (;0;) (func (result i32)))
+  (func (;0;) (type 0) (result i32)
+    i32.const 65
+  )
+  (export "run" (func 0))
+)"#;
 
         let vm = Vm::from_source(code);
+        let result_code =
+            wasmprinter::print_bytes(&vm.bytecode).expect("failed to convert bytecode to string");
 
-        panic!("{:#?}\n{:#?}", vm.bytecode, expected);
+        eprintln!("{}\n{}", result_code);
 
-        assert!(vm.bytecode == expected);
+        // Compile the expected code to bytecode, then back to avoid formatting issues
+        assert!(result_code == expected_code);
     }
+}
 }

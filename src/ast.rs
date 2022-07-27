@@ -1,6 +1,5 @@
 use crate::error::{ParserErrorInternal, ParserErrorWithSpan};
 use crate::tokens::{Operator, Token};
-use peekmore::{PeekMore, PeekMoreIterator};
 use std::cell::RefCell;
 use std::iter::Peekable;
 use std::net::AddrParseError;
@@ -85,6 +84,10 @@ impl<'source> Identifier<'source> {
     fn is_keyword_local(&self) -> bool {
         self.0 == "local"
     }
+
+    fn is_keyword_return(&self) -> bool {
+        self.0 == "return"
+    }
 }
 
 macro_rules! ident {
@@ -98,7 +101,8 @@ pub enum AstNodeType<'source> {
     VarDecl(VarDecl<'source>),
     FuncCall,
     Expression(Expression<'source>),
-    Statement,
+    Statement(Box<AstNode<'source>>),
+    Return(Box<AstNode<'source>>),
     StructDef(StructDef<'source>),
     EnumDef,
     FuncDef,
@@ -119,8 +123,8 @@ pub struct UnaryExpression<'source> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct IfCondition<'source> {
-    condition: Box<AstNode<'source>>,
-    body: Vec<AstNode<'source>>,
+    pub condition: Box<AstNode<'source>>,
+    pub body: Vec<AstNode<'source>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -295,6 +299,37 @@ impl<'source> Parser<'source> {
             typ: ntype,
             span: start..end,
         })
+    }
+
+    fn parse_statement(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
+        let start = self.position();
+        let mut typ = self.parse_ident()?;
+        if typ.as_ident().unwrap().is_keyword_if() {
+            self.rewind_to(start);
+            return self.parse_if_condition();
+        }
+
+        self.chomp_ignored_tokens()?;
+
+        let typ_as_ident = typ.as_ident().unwrap();
+        if typ_as_ident.is_keyword_local() {
+            self.rewind_to(start);
+            return self.parse_var_decl();
+        }
+
+        if typ_as_ident.is_keyword_return() {
+            self.chomp_ignored_tokens()?;
+            let expression = self.parse_expression()?;
+            self.expect_next_token(Token::Semicolon)?;
+
+            return Ok(AstNode {
+                typ: AstNodeType::Return(Box::new(expression)),
+                span: start..self.position(),
+            });
+        }
+
+        self.rewind_to(start);
+        self.parse_var_decl()
     }
 
     fn parse_var_decl(&self) -> Result<AstNode<'source>, ParserErrorInternal<'source>> {
@@ -853,9 +888,11 @@ impl<'source> Parser<'source> {
                 self.rewind_to(start);
                 return self.parse_var_decl();
             }
+
+            self.rewind_to(start);
         }
 
-        todo!()
+        self.parse_statement()
     }
 
     fn next(&self) -> Result<char, ParserErrorInternal<'source>> {
@@ -1220,6 +1257,33 @@ mod tests {
                 is_local: true,
             }),
             span: 0..15,
+        };
+
+        assert!(result.typ == expected.typ);
+        assert!(result.span == (0..s.len()));
+    }
+
+    #[test]
+    fn parse_return_statement() {
+        let s = r#"return foo;"#;
+
+        let parser = Parser::new(s);
+
+        let result = parser.parse_statement().unwrap();
+
+        let expected = AstNode {
+            typ: AstNodeType::Return(Box::new(AstNode {
+                typ: AstNodeType::Expression(Expression {
+                    lhs: Box::new(AstNode {
+                        typ: AstNodeType::Identifier(Identifier("foo")),
+                        span: 7..10,
+                    }),
+                    operator: None,
+                    rhs: None,
+                }),
+                span: 7..10,
+            })),
+            span: 0..11,
         };
 
         assert!(result.typ == expected.typ);
